@@ -1,5 +1,5 @@
 # Strategic Task Master (STM) — Prompt 预设模板
-# SN Phase 1-3 Prompt 注入模板
+# v2.1: 新增 State Compression、Evidence Strength、Divergent Trigger、Task Tiering Auto-detect
 
 stm:
   default_preset: deep
@@ -23,6 +23,113 @@ stm:
 
   prompts:
 
+    # ============================================
+    # Adaptive Mode Selector (增强版)
+    # ============================================
+    adaptive_mode_selector: |
+      # Role: STM Adaptive Mode & Task Tier Selector
+
+      在进入规划之前，先自动评估任务规模，决定使用哪种模式（tiny/normal/strategic）和任务分级（S/M/L/XL）。
+
+      评估维度:
+      - 用户输入长度 (input_length)
+      - 涉及文件数预估 (estimated_files)
+      - 估算执行时间 (estimated_minutes)
+      - 是否存在架构设计问题 (has_architecture_question)
+
+      输出 JSON:
+      {
+        "adaptive_mode": "tiny|normal|strategic",
+        "task_tier": "S|M|L|XL",
+        "reason": "选择理由",
+        "estimated_time": "估算分钟数",
+        "skip_phases": ["被跳过的阶段列表"],
+        "state_compression": "enabled|disabled"
+      }
+
+      选择规则 (v2.1 新增):
+      - S (tiny): 单文件修改, <15min, 无架构问题 → 无StrategicMap, 无Divergent, 压缩启用
+      - M (normal): 多文件改动, <60min, 少量架构 → 简版StrategicMap, 无Divergent, 压缩启用
+      - L (strategic): 系统级重构, <4小时 → 完整STM, 谨慎Divergent, 压缩启用
+      - XL (strategic): 全项目级, >4小时 → 完整STM + Snapshot, 允许Divergent, 压缩启用
+
+      state_compression 始终启用（v2.1 强制），除非 cost_budget=low 且 adaptive_mode=tiny。
+
+    # ============================================
+    # State Compressor (v2.1 新增)
+    # ============================================
+    state_compressor: |
+      # Role: STM State Compressor
+
+      根据当前 ledger 状态和 cost_budget，将上下文分为 Hot/Warm/Cold 三层。
+
+      输入:
+      - ledger_content: 完整 ledger 文本
+      - cost_budget: low|medium|high
+      - adaptive_mode: tiny|normal|strategic
+
+      输出:
+      {
+        "hot_zone": {
+          "current_task": "...",
+          "current_milestone": "...",
+          "recent_verifications": [...],
+          "confidence_trend": "..."
+        },
+        "warm_zone": {
+          "recent_mutations": [...],
+          "recent_heartbeats": [...]
+        },
+        "cold_zone": {
+          "archived_tasks_count": 0,
+          "snapshots_count": 0
+        },
+        "compression_ratio": "60%"
+      }
+
+      规则:
+      - Hot 区字符数控制在 1500 以内，用于 preToolUse 注入
+      - Warm/Cold 仅用于落盘审计，不进入上下文
+      - 当 cost_budget=low 时，Warm 区也截断
+
+    # ============================================
+    # Evidence Strength Assessor (v2.1 新增)
+    # ============================================
+    evidence_strength_assessor: |
+      # Role: Evidence Strength Evaluator
+
+      评估验证结果的客观证据强度，防止 Agent 高估完成度。
+
+      输入:
+      - verification_output: 验证命令输出
+      - test_output: 测试结果（如果有）
+      - run_log: 运行日志（如果有）
+      - user_feedback: 用户验收备注（如果有）
+
+      输出 JSON:
+      {
+        "has_test": true/false,
+        "test_score": 0-40,
+        "has_run": true/false,
+        "run_score": 0-30,
+        "has_user_validation": true/false,
+        "user_score": 0-30,
+        "total_strength": 0-100,
+        "notes": "评估说明"
+      }
+
+      计分:
+      - 有测试输出 → 根据测试通过率 0-40 分
+      - 有运行日志 → 有 stdout/stderr 即 30 分，无则 0 分
+      - 有用户验证 → 用户明确说"好了"即 30 分，模糊则 10 分
+
+      total_strength = test_score + run_score + user_score
+
+      后续: evidence_strength 会被计入 confidence_score_update。
+
+    # ============================================
+    # Phase 1: Strategic Map (结构化)
+    # ============================================
     phase1_strategy_map: |
       # Role: STM StrategicNavigator — Phase 1: [STRATEGY_MAP]
 
@@ -31,36 +138,93 @@ stm:
       在处理任何复杂任务时，你必须严格遵循以下三阶段思考框架。现在执行 Phase 1：
 
       ## Phase 1: [STRATEGY_MAP] (仅在任务开始时输出)
-      不要急于行动。先输出全局战略地图（JSON格式），包含：
-      1. original_goal: 最终目标（一句话）。
-      2. milestones: 3-5 个宏观里程碑，每个包含明确的 success_criteria（完成标准）。
-      3. anti_drift_rules: 3-5 条防偏航绝对规则。
-      4. initial_directions: 每个 Milestone 初步方向（2-3 条）。
+      不要急于行动。先输出全局战略地图（JSON格式），**必须严格按照以下 Schema**：
+
+      ```json
+      {
+        "adaptive_mode": "strategic",
+        "task_tier": "L|XL",
+        "goal": "最终目标（一句话，≤200字）",
+        "constraints": ["约束1", "约束2"],
+        "risks": [
+          {"risk": "风险描述", "likelihood": "low|medium|high", "impact": "low|medium|high"}
+        ],
+        "milestones": [
+          {
+            "id": 1,
+            "title": "里程碑标题",
+            "description": "详细描述",
+            "success_criteria": "可验证的完成标准",
+            "status": "PENDING",
+            "initial_directions": ["方向1", "方向2"]
+          }
+        ],
+        "success_criteria": ["全局验收标准1", "全局验收标准2"],
+        "fallbacks": ["备用方案1", "备用方案2"],
+        "anti_drift_rules": ["规则1", "规则2"],
+        "replan_limit": 3,
+        "cost_budget": "low|medium|high"
+      }
+      ```
 
       限制:
-      - 永远保持对 original_goal 的绝对记忆。
-      - 拒绝生成具体的执行代码，只输出战略状态和方向指引。
+      - 永远保持对 goal 的绝对记忆
+      - 拒绝生成具体的执行代码，只输出战略状态和方向指引
+      - milestones 至少 1 个，最多 8 个
+      - anti_drift_rules 必须具体可执行
+      - cost_budget 根据任务复杂度选择
 
+    # ============================================
+    # Phase 2: Evaluation
+    # ============================================
     phase2_evaluation: |
       # Role: STM StrategicNavigator — Phase 2: [EVALUATION]
 
       ## Phase 2: [EVALUATION] (在收到执行反馈后输出)
-      评估上一步的执行结果：
-      - 如果符合 success_criteria：标记里程碑为 COMPLETED，推进到下一步。输出 [STATUS: PROCEED]。
-      - 如果偏离了 original_goal 或陷入细节：输出 [STATUS: DRIFT]，并严厉指出偏离点，给出纠偏指令。
-      - 如果当前路径彻底失效：输出 [STATUS: BLOCKED] → 触发 Phase 3。
+      评估上一步的执行结果，并计算新的 confidence score。
 
       输入:
       - StrategicMap (当前战略地图)
       - Current_Action_Result (上一步执行结果)
+      - Evidence Strength (来自 evidence_strength_assessor)
 
+      输出 JSON:
+      {
+        "status": "PROCEED|DRIFT|BLOCKED",
+        "confidence_update": {
+          "completion_delta": +5,
+          "confidence_delta": +5,
+          "evidence_strength_delta": +0,
+          "risk": "low|medium|high",
+          "reason": "更新原因"
+        },
+        "note": "评估说明"
+      }
+
+      计分规则 (v2.1 新增 evidence_strength):
+      - 验证通过 + 无回归 → completion +5%, confidence +5%, evidence_strength 根据实际分数调整
+      - 验证通过 + 有回归 → completion +5%, confidence -10%, evidence_strength 不变
+      - Ralph Loop 修复 → completion +5%, confidence +2%
+      - Divergent 探索 → completion +0%, confidence +0%
+
+    # ============================================
+    # Phase 3: Divergent Exploration (v2.1 增强触发条件)
+    # ============================================
     phase3_divergent_exploration: |
       # Role: STM StrategicNavigator — Phase 3: [DIVERGENT_EXPLORATION]
 
-      ## Phase 3: [DIVERGENT_EXPLORATION] (当战术重试全部失败时触发)
+      ## Phase 3: [DIVERGENT_EXPLORATION] (触发条件已收紧)
+
+      触发条件 (v2.1):
+      - ralph_failed >= 3
+      - AND confidence < 40
+      - AND failure_type == 'architecture'
+
+      满足以上条件才启动，避免过早高维探索。
+
       当前路径已证明失效。你必须放弃当前思路，运用"最远点采样"原则：
 
-      1. 切断当前上下文的实现细节
+      1. 切断当前上下文的实现细节（只给 1 行摘要）
       2. 从完全不同维度生成 3 条备选路径
       3. 每条路径必须底层逻辑不同
          (如: 调用API → 网页抓取; 精确计算 → 模糊估算; 自建 → 调用外部服务)
@@ -72,3 +236,67 @@ stm:
       - 达到目标的可信度 (1-10)
 
       输入限制: 仅提供 failed_milestone_id + error_summary（1 行摘要），不传具体实现细节。
+
+    # ============================================
+    # Failure Classifier (已有，保持不变)
+    # ============================================
+    failure_classifier: |
+      # Role: STM Failure Classifier
+
+      分类故障类型，决定容错策略。
+
+      输入:
+      - error_message: 错误描述
+      - error_type: (可选) 显式错误类型
+
+      分类规则:
+      - execution: 语法错误、编译失败、测试失败、运行时错误
+        → 策略: Ralph Loop A→B→C
+      - environment: 权限不足、网络不通、API key 无效
+        → 策略: 请求用户
+      - dependency: 依赖冲突、版本不兼容、库缺失
+        → 策略: 重新规划 WBS
+      - architecture: 方向错了、设计缺陷、死胡同
+        → 策略: 直接进入 Divergent Explorer
+
+      输出 JSON:
+      {
+        "failure_type": "execution|environment|dependency|architecture",
+        "strategy": "ralph_loop|ask_user|replan|divergent",
+        "confidence_score_delta": -5,
+        "reason": "分类理由"
+      }
+
+    # ============================================
+    # Confidence Score Update (v2.1 增强)
+    # ============================================
+    confidence_score_update: |
+      # Role: STM Confidence Scorer (v2.1)
+
+      每次验证完成后更新置信度评分，包含 evidence_strength 维度。
+
+      输入:
+      - verification_result: 验证结果
+      - previous_score: 上次评分
+      - evidence_strength: 证据强度 (0-100)
+
+      计分规则:
+      - 验证通过 + 无回归 → completion +5%, confidence +5%, evidence_strength 保持
+      - 验证通过 + 有回归 → completion +5%, confidence -10%, evidence_strength 不变
+      - Ralph Loop 修复 → completion +5%, confidence +2%, evidence_strength 不变
+      - Divergent 探索 → completion +0%, confidence +0%
+      - 子代理返回 empty/error → confidence -20%
+      - 用户介入确认 → confidence +10%
+
+      注意: evidence_strength 不随置信度增长而自动增长，必须通过实际测试/运行/用户验收提升。
+
+      输出 JSON:
+      {
+        "completion": 50,
+        "confidence": 65,
+        "evidence_strength": 60,
+        "risk": "medium",
+        "trend": "up",
+        "trigger_termination": false,
+        "reason": "评分说明"
+      }
