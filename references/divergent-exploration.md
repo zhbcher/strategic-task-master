@@ -1,59 +1,68 @@
-# Divergent Exploration — 高维探索 (SN Phase 3)
+# Divergent Explorer — 高维探索 (v2.1)
 
-## 概述
+## 触发条件（v2.1 收紧版）
 
-当 Ralph Loop 3 轮战术重试全部失败时，说明当前路径在战略上是死胡同。Divergent Explorer 通过"最远点采样"原则，生成底层逻辑完全不同的替代方案。
+Divergent Explorer 不再轻易触发。满足 **全部** 条件才启动：
 
-## 触发条件
+| 条件 | 要求 | 说明 |
+|------|------|------|
+| `ralph_failed` | >= 3 | Ralph Loop 已失败 3 轮 |
+| `confidence` | < 40 | 信心已跌至低位 |
+| `failure_type` | `architecture` | 故障分类器判定为架构级问题 |
+| `plan_frozen` | `false` | 重规划未冻结 |
 
-- Ralph Loop Round 3 失败后
-- 触发前自动备份 WBS 台账（见 workflows/strategic-replan-snapshot.md）
+**例外**: 如果 `failure_type == 'architecture'` 且故障明显是方向性错误（如技术选型错误），即使 `ralph_failed < 3` 也可直接触发（由 phase2_evaluation 判断）。
 
-## 上下文污染防护（关键）
+## 输入规范
 
-**输入限制**: Divergent Explorer 只接收两样东西：
-1. `failed_milestone_id` — 哪个里程碑失败了
-2. `error_summary` — 1 行摘要（如"数据库查询优化：索引、缓存、异步3种方案均失败"）
-
-**不传**：具体实现细节、代码行、失败日志。防止发散思维被污染。
-
-## 执行流程
+- **仅提供**: `failed_milestone_id` + `error_summary`（1 行摘要）
+- **不传**: 具体实现细节、代码文件、完整错误堆栈
 
 ```
-1. 读取输入: failed_milestone_id + error_summary
-2. 注入 Phase 3 [DIVERGENT_EXPLORATION] System Prompt
-3. LLM 输出 3 条备选路径
-4. 校验: 每条路径的底层逻辑必须不同
-   - 如果两条路径本质相同 → 要求重新生成
-5. 主 Agent 选择最优路径（结合 anti_drift_rules 判断）
-6. 执行 strategic-replan:
-   - cp ledger.md ledger-{ts}-before-replan.md
-   - git stash (代码快照)
-   - 重写 StrategicMap
-   - 重写 WBS 台账
-   - Hash Attestation
-```
-
-## 输出格式
-
-每条路径包含：
-
-```json
+Input:
 {
-  "path_title": "用物化视图替代实时查询",
-  "fundamental_logic": "将运行时计算转为预计算存储",
-  "expected_risk": "数据延迟 5min，不能用于实时场景",
-  "confidence": 8
+  "failed_milestone_id": 3,
+  "error_summary": "架构设计无法满足性能要求：当前方案预估 QPS < 100，需求是 QPS > 1000"
 }
 ```
 
-## 成功标准
+## 输出要求
 
-- 生成 3 条路径的底层逻辑互不相同 ✅
-- 至少 1 条路径不违反 anti_drift_rules ✅
-- 新路径未在 Ralph Loop 中被尝试过 ✅
+输出 3 条备选路径，每条包含：
 
-## 失败处理
+```json
+{
+  "path_title": "路径标题",
+  "底层逻辑": "与当前路径完全不同的技术方向",
+  "预期风险": ["风险1", "风险2"],
+  "可信度": 1-10,
+  "理由": "为什么这个方向可能成功"
+}
+```
 
-如果 Divergent Explorer 也失败（3 条路径都验证失败）：
-→ 进入 L2 Decoupled（降级 Ralph Loop）→ 只做验证+只读修复 → 不引入新方案
+**底层逻辑必须不同**（如：调用 API → 网页抓取；精确计算 → 模糊估算；自建 → 调用外部服务）。
+
+## 输出后处理
+
+- 成功 → 重写 WBS → 更新置信度
+- 失败 → L2 Decoupled（降级只读修复）
+- L2 仍失败 → 上报用户
+
+## 与 State Compression 的协作
+
+Divergent 探索期间：
+- 输入只取 Hot 区内容（当前任务 + 最近验证）
+- Warm/Cold 区不参与决策（避免历史噪音）
+
+## 频率控制
+
+| 统计 | 预期比例 |
+|------|---------|
+| 所有故障中进入 Divergent 的比例 | < 5% |
+| 单任务最多触发次数 | 1 |
+| 重规划后再次触发的惩罚 | 立即冻结并上报 |
+
+## 与 Replan Limit 的关系
+
+- 每次 Divergent 探索计入 `replan_count`
+- 如果 `divergent_count >= 1` 后再需 Divergent → 直接冻结
