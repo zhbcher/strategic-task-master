@@ -1,6 +1,6 @@
 ---
 name: "strategic-task-master"
-description: "融合StraTA战略导航与LTM工程管控的工业级长程任务终极方案。STM v2.1: 状态压缩、证据强度评估、Divergent触发收紧、硬熔断、任务复杂度分级。"
+description: "工业级长程任务 Agent OS。双层规划+三级容错+状态压缩+动态模式升级+回滚策略+信任评分+价值评估。v3.0"
 ---
 
 # Strategic Task Master (STM) — 战略任务主控
