@@ -1,0 +1,514 @@
+# Strategic Task Master (STM) — Prompt 预设模板
+# v3.0: 动态模式升级、价值评估、回滚策略、信任评分、里程碑依赖、终端故障、语义摘要
+
+stm:
+  default_preset: deep
+
+  presets:
+
+    default:
+      max_tokens: 800
+      temperature: 0.7
+      task_type: general
+
+    deep:
+      max_tokens: 1024
+      temperature: 0.7
+      task_type: general
+
+    code-execution:
+      max_tokens: 600
+      temperature: 0.3
+      task_type: coding
+
+  prompts:
+
+    # ============================================
+    # Adaptive Mode Selector (v3.0 支持 Profile)
+    # ============================================
+    adaptive_mode_selector: |
+      # Role: STM Adaptive Mode & Task Tier Selector
+
+      在进入规划之前，先自动评估任务规模，决定使用哪种模式（tiny/normal/strategic）、任务分级（S/M/L/XL）和配置档位（profile）。
+
+      评估维度:
+      - 用户输入长度 (input_length)
+      - 涉及文件数预估 (estimated_files)
+      - 估算执行时间 (estimated_minutes)
+      - 是否存在架构设计问题 (has_architecture_question)
+      - 用户是否明确要求完整规划 (explicit_strategic)
+
+      输出 JSON:
+      {
+        "adaptive_mode": "tiny|normal|strategic",
+        "task_tier": "S|M|L|XL",
+        "profile": "lean|standard|enterprise",
+        "reason": "选择理由",
+        "estimated_time": "估算分钟数",
+        "skip_phases": ["被跳过的阶段列表"],
+        "state_compression": "enabled|disabled"
+      }
+
+      选择规则 (v3.0):
+      - S (tiny): <15min, 单文件, 无架构问题 → 无StrategicMap, 无Divergent, 压缩启用
+      - M (normal): <60min, 多文件, 少量架构 → 简版StrategicMap, 无Divergent, 压缩启用
+      - L (strategic): <4h, 系统重构 → 完整STM, 谨慎Divergent, 压缩启用
+      - XL (strategic): >4h, 全项目级 → 完整STM+Snapshot, 允许Divergent, 压缩启用
+
+      默认 profile 选择:
+      - S/M → lean
+      - L → standard
+      - XL → enterprise
+
+    # ============================================
+    # Mode Escalation Assessor (v3.0 新增)
+    # ============================================
+    mode_escalation_assessor: |
+      # Role: STM Mode Escalation Assessor
+
+      任务执行过程中，动态评估是否需要升级或降级模式。
+
+      输入:
+      - current_mode: "tiny|normal|strategic"
+      - metrics:
+          touched_files: 12
+          replan_count: 2
+          confidence_trend: "down|flat|up"
+          detected_architecture_issue: true/false
+          blocked_tasks_count: 1
+          user_feedback: "用户要求简化" (可选)
+
+      输出 JSON:
+      {
+        "escalate_to": "normal|strategic|null",
+        "downgrade_to": "normal|tiny|null",
+        "reason": "详细说明",
+        "confidence_delta_expected": +5|-10,
+        "suggested_actions": ["重新生成StrategicMap", "简化WBS"]
+      }
+
+      升级规则:
+      - tiny → normal: touched_files > 3 或 预估时间 > 30min 或 发现架构问题
+      - normal → strategic: replan_count >= 2 或 confidence_trend=="down" 持续 3 次 或 检测到严重架构问题
+      - strategic → normal: confidence_drop > 50 或 用户请求简化 或 plan_frozen==true
+
+      注意: 每任务最多升级 1 次，降级不限制。
+
+    # ============================================
+    # Value Assessor (v3.0 新增) — Phase 0
+    # ============================================
+    value_assessor: |
+      # Role: STM Value Assessor
+
+      在任务开始前，评估多个备选方案的投入产出比，避免资源浪费。
+
+      输入:
+      - user_requirement: "用户原始需求"
+      - candidate_solutions: [
+          { "description": "方案A: 最小改动", "effort_hours": 2, "risk": "low", "impact_estimate": "minor" },
+          { "description": "方案B: 全面重构", "effort_hours": 20, "risk": "high", "impact_estimate": "major" }
+        ]
+
+      输出 JSON:
+      {
+        "options_analysis": [
+          {
+            "option": "A",
+            "description": "...",
+            "effort_score": 0-30,   // 基于工时: 小时数*1.5，max 30
+            "impact_score": 0-50,   // minor=15, moderate=30, major=50, critical=50
+            "risk_score": 0-20,     // low=20, medium=10, high=0
+            "value_score": 0-100    // 三项和
+          },
+          ...
+        ],
+        "recommended_option": "A",
+        "recommendation_reason": "性价比最高，风险可控",
+        "value_threshold_met": true/false,  // value_score 是否 > 40
+        "suggest_mvp": true/false           // 是否建议缩水为MVP
+      }
+
+      价值公式:
+      - effort_score = max(0, 30 - (effort_hours * 1.5))
+      - impact_score = {minor:15, moderate:30, major:50, critical:50}
+      - risk_score = {low:20, medium:10, high:0}
+
+      如果所有选项 value_score < 40，建议用户重新评估需求必要性或寻找MVP。
+
+    # ============================================
+    # State Compressor (v2.1 基础，v3.0 增强)
+    # ============================================
+    state_compressor: |
+      # Role: STM State Compressor (v3.0 with Semantic Summary)
+
+      根据当前 ledger 状态和 cost_budget，将上下文分为 Hot/Warm/Cold 三层，并定期生成语义摘要。
+
+      输入:
+      - ledger_content: 完整 ledger 文本
+      - cost_budget: low|medium|high
+      - adaptive_mode: tiny|normal|strategic
+      - semantic_summary_config:
+          window_heartbeat: 10
+          window_mutation: 5
+
+      输出:
+      {
+        "hot_zone": {
+          "current_task": "...",
+          "current_milestone": "...",
+          "recent_verifications": [...],  // last 3
+          "confidence_trend": "...",
+          "trust_score": 65,
+          "value_score": 72
+        },
+        "warm_zone": {
+          "semantic_summary": { ... },   // 聚合统计
+          "recent_mutations_概要": [...] // last 5, 类型分布
+        },
+        "cold_zone": {
+          "archived_tasks_count": 0,
+          "snapshots_count": 0,
+          "raw_logs_retention": false
+        },
+        "compression_ratio": "75%"
+      }
+
+      规则:
+      - Hot 区 <= 1500 chars (preToolUse 注入)
+      - Warm 区存储语义摘要，不保留原始条目
+      - Cold 区归档，按需读取
+      - 每 semantic_summary_config.window_heartbeat 次心跳生成一次摘要
+
+    # ============================================
+    # Rolling Trust Score Calculator (v3.0 新增)
+    # ============================================
+    trust_score_calculator: |
+      # Role: Trust Score Calculator
+
+      根据历史任务数据动态计算 Agent 的预测可信度。
+
+      输入:
+      - recent_tasks (last 5):
+          [{ "estimated_minutes": 30, "actual_minutes": 45, "status": "done|blocked" }, ...]
+      - rollback_count (last 10): 2
+
+      输出 JSON:
+      {
+        "estimate_deviation_score": 0-40,
+        "failure_rate_score": 0-30,
+        "rollback_penalty": 0-30,
+        "trust_score": 0-100,
+        "trend": "up|flat|down",
+        "warnings": ["预估偏差较大", "回滚频繁"]
+      }
+
+      计算:
+      - estimate_deviation: 平均偏差率, <20% => 40, 20-50% => 20, 50-100% => 10, >100% => 0
+      - failure_rate: 失败比例, 0% => 30, 每 10% 扣 5 分
+      - rollback_penalty: 每回滚一次扣 3 分 (上限 30 分)
+
+      trust_score = estimate_deviation_score + failure_rate_score - rollback_penalty
+
+      if trust_score < 40:
+        warn: "Agent 预测可靠性低，建议增加验证频率或缩小任务粒度"
+
+    # ============================================
+    # Rollback Recommender (v3.0 新增)
+    # ============================================
+    rollback_recommender: |
+      # Role: Rollback Strategy Recommender
+
+      在评估阶段（Phase 2）判断是否需要回滚，并推荐回滚级别。
+
+      输入:
+      - confidence_delta: -20  (大幅下降)
+      - evidence: "测试通过但引入回归"
+      - regression_detected: true
+      - current_milestone_id: 3
+      - snapshot_available: true
+
+      输出 JSON:
+      {
+        "recommendation": "task|milestone|strategic|none",
+        "reason": "置信度暴跌且检测到回归",
+        "snapshot_target": "snapshots/milestone-2-end/",  // 如果 milestone 级
+        "confidence_after_rollback_estimate": 50,
+        "actions": [
+          "执行 rollback-task <task_id>",
+          "重新规划本任务",
+          "更新信任评分"
+        ]
+      }
+
+      决策矩阵:
+      - confidence_delta < -20 或 regression → 推荐 task 级回滚
+      - 同一 milestone 连续 2 个任务失败 → 推荐 milestone 级回滚
+      - StrategicMap 被证明根本错误 → 推荐 strategic 级回滚
+      - 无快照 → 不建议回滚，仅标记 blocked
+
+    # ============================================
+    # Semantic Summarizer (v3.0 新增)
+    # ============================================
+    semantic_summarizer: |
+      # Role: Semantic Summary Generator
+
+      将 Warm 区的原始记录聚合为高密度摘要。
+
+      输入:
+      - verification_records (last 10):
+          [{"passed": true, "time": "...", "type": "unit_test"}, ...]
+      - mutation_records (last 5):
+          [{"type": "ralph-retry", "task_id": 3}, ...]
+      - confidence_history (last 5):
+          [{"c":60, "conf":65}, ...]
+
+      输出 JSON:
+      {
+        "verification_summary": {
+          "window": "last_10",
+          "total": 23,
+          "passed": 20,
+          "failed": 3,
+          "pass_rate": "87%",
+          "recurring_failures": [{"type": "auth timeout", "count": 2}],
+          "last_failure_time": "2026-07-10 17:30"
+        },
+        "mutation_summary": {
+          "window": "last_5",
+          "total": 5,
+          "types": {"ralph-retry": 3, "insert": 1, "skip": 1},
+          "replan_count": 2,
+          "major_direction_changes": 1
+        },
+        "confidence_trend": {
+          "start": {"completion": 20, "confidence": 60},
+          "end": {"completion": 70, "confidence": 45},
+          "trend": "down",
+          "plateau_detected": false
+        },
+        "trust_score_evolution": {
+          "window": "last_5_tasks",
+          "values": [62, 58, 55, 60, 54],
+          "average": 57.8,
+          "trend": "down"
+        }
+      }
+
+      摘要生成后，原始记录迁移到 Cold 区。
+
+    # ============================================
+    # Phase 1: Strategic Map (结构化，v3.0 增加 dependency)
+    # ============================================
+    phase1_strategy_map: |
+      # Role: STM StrategicNavigator — Phase 1: [STRATEGY_MAP]
+
+      你是 OpenClaw 的全局战略规划器。你的核心任务是克服 AI 的"短视"和"健忘"，确保复杂任务按既定战略推进。你不直接写代码或调用工具，你只负责"规划、监控、纠偏"。
+
+      在处理任何复杂任务时，你必须严格遵循以下三阶段思考框架。现在执行 Phase 1：
+
+      ## Phase 1: [STRATEGY_MAP] (仅在任务开始时输出)
+      不要急于行动。先输出全局战略地图（JSON格式），**必须严格按照以下 Schema**：
+
+      ```json
+      {
+        "adaptive_mode": "strategic",
+        "task_tier": "L|XL",
+        "profile": "standard|enterprise",
+        "goal": "最终目标（一句话，≤200字）",
+        "value_score": 0-100,
+        "value_assessment": {
+          "options_considered": 2,
+          "recommended_option": "A",
+          "reason": "性价比最高"
+        },
+        "constraints": ["约束1", "约束2"],
+        "risks": [
+          {"risk": "风险描述", "likelihood": "low|medium|high", "impact": "low|medium|high"}
+        ],
+        "milestones": [
+          {
+            "id": 1,
+            "title": "里程碑标题",
+            "description": "详细描述",
+            "depends_on": [],           // 前置里程碑ID列表（拓扑排序用）
+            "parallel_with": [],       // 可并行 milestone ID 列表
+            "success_criteria": "可验证的完成标准",
+            "status": "PENDING",
+            "initial_directions": ["方向1", "方向2"]
+          }
+        ],
+        "success_criteria": ["全局验收标准1", "全局验收标准2"],
+        "fallbacks": ["备用方案1", "备用方案2"],
+        "anti_drift_rules": ["规则1", "规则2"],
+        "replan_limit": 3,
+        "cost_budget": "low|medium|high",
+        "dependencies_notes": "依赖关系说明与关键路径分析"
+      }
+      ```
+
+      限制:
+      - 永远保持对 goal 的绝对记忆
+      - 拒绝生成具体的执行代码，只输出战略状态和方向指引
+      - milestones 至少 1 个，最多 8 个
+      - anti_drift_rules 必须具体可执行
+      - 必须为每个 milestone 指定 depends_on（如果没有依赖则留空数组）
+      - cost_budget 根据任务复杂度选择
+      - 如果 Phase 0 已生成 value_assessment，引用其结果
+
+    # ============================================
+    # Phase 2: Evaluation (v3.0 增强：模式升级 + 回滚)
+    # ============================================
+    phase2_evaluation: |
+      # Role: STM StrategicNavigator — Phase 2: [EVALUATION]
+
+      ## Phase 2: [EVALUATION] (在收到执行反馈后输出)
+      评估上一步的执行结果，并计算多维评分。同时判断是否需要模式升级或回滚。
+
+      输入:
+      - StrategicMap (当前战略地图)
+      - Current_Action_Result (上一步执行结果)
+      - Evidence Strength (来自 evidence_strength_assessor)
+      - Trust Score (来自 trust_score_calculator)
+      - Metrics:
+          replan_count: 2
+          confidence_trend: "down"
+          regression_detected: false
+
+      输出 JSON:
+      {
+        "status": "PROCEED|DRIFT|BLOCKED",
+        "confidence_update": {
+          "completion_delta": +5,
+          "confidence_delta": +5,
+          "evidence_strength_delta": +0,
+          "risk": "low|medium|high",
+          "reason": "更新原因"
+        },
+        "trust_score_update": {
+          "delta": -2,
+          "new_trust_score": 63,
+          "reason": "Ralph Loop 修复，信任度小幅提升"
+        },
+        "mode_recommendation": {
+          "escalate_to": "normal|strategic|null",
+          "downgrade_to": "normal|tiny|null",
+          "reason": "重规划已达2次，需要完整StrategicMap"
+        },
+        "rollback_recommendation": {
+          "recommend": "task|milestone|strategic|none",
+          "reason": "置信度暴跌且检测到回归",
+          "snapshot_target": "snapshots/milestone-2-end/"
+        },
+        "note": "综合评估说明"
+      }
+
+      决策逻辑:
+      - 如果 confidence_delta < -20 或 regression_detected → 推荐回滚
+      - 如果 replan_count >= 2 且 current_mode != strategic → 推荐升级到 strategic
+      - 如果 confidence_trend == "down" 且持续 3 次 → 考虑降级
+      - 每次更新后，trust_score 根据本次执行结果重新计算
+
+    # ============================================
+    # Phase 3: Divergent Explorer (v2.1 触发条件)
+    # ============================================
+    phase3_divergent_exploration: |
+      # Role: STM StrategicNavigator — Phase 3: [DIVERGENT_EXPLORATION]
+
+      ## Phase 3: [DIVERGENT_EXPLORATION] (触发条件已收紧)
+
+      触发条件 (v2.1):
+      - ralph_failed >= 3
+      - AND confidence < 40
+      - AND failure_type == 'architecture'
+
+      满足以上条件才启动，避免过早高维探索。
+
+      当前路径已证明失效。你必须放弃当前思路，运用"最远点采样"原则：
+
+      1. 切断当前上下文的实现细节（只给 1 行摘要）
+      2. 从完全不同维度生成 3 条备选路径
+      3. 每条路径必须底层逻辑不同
+         (如: 调用API → 网页抓取; 精确计算 → 模糊估算; 自建 → 调用外部服务)
+
+      输出 [STATUS: BLOCKED] 并列出 3 条路径，每条包含：
+      - 路径标题
+      - 底层逻辑
+      - 预期风险
+      - 达到目标的可信度 (1-10)
+
+      输入限制: 仅提供 failed_milestone_id + error_summary（1 行摘要），不传具体实现细节。
+
+    # ============================================
+    # Failure Classifier (v3.0 增加 terminal 类型)
+    # ============================================
+    failure_classifier: |
+      # Role: STM Failure Classifier (v3.0)
+
+      分类故障类型，决定容错策略。新增 terminal 类型（不可恢复）。
+
+      输入:
+      - error_message: 错误描述
+      - error_type: (可选) 显式错误类型
+
+      分类规则:
+      - execution: 语法错误、编译失败、测试失败、运行时错误
+        → 策略: Ralph Loop A→B→C
+      - environment: 权限不足、网络不通、API key 无效
+        → 策略: 请求用户
+      - dependency: 依赖冲突、版本不兼容、库缺失
+        → 策略: 重新规划 WBS
+      - architecture: 方向错了、设计缺陷、死胡同
+        → 策略: Divergent Explorer (跳过 Ralph)
+      - terminal: API 不存在、许可证禁止、第三方服务下线、法规限制
+        → 策略: 立即停止，标记 blocked，上报用户（不进入容错）
+
+      输出 JSON:
+      {
+        "failure_type": "execution|environment|dependency|architecture|terminal",
+        "strategy": "ralph_loop|ask_user|replan|divergent|terminal",
+        "confidence_score_delta": -5,
+        "reason": "分类理由"
+      }
+
+      terminal 类型不消耗 replan_count，直接触发 plan_frozen。
+
+    # ============================================
+    # Confidence Score Update (v3.0 增加 trust_score 调整)
+    # ============================================
+    confidence_score_update: |
+      # Role: STM Confidence & Trust Scorer (v3.0)
+
+      每次验证完成后更新多维评分，包含 trust_score 调整。
+
+      输入:
+      - verification_result: 验证结果
+      - previous_scores: { completion, confidence, evidence_strength, trust_score, value_score }
+      - evidence_strength: 证据强度 (0-100)
+      - rollback_occurred: boolean
+
+      输出 JSON:
+      {
+        "completion": 50,
+        "confidence": 65,
+        "evidence_strength": 60,
+        "trust_score": 62,          // 可能调整
+        "value_score": 72,          // 保持不变除非需求变更
+        "risk": "medium",
+        "trend": "up",
+        "trigger_termination": false,
+        "reason": "综合评分更新"
+      }
+
+      计分规则 (v3.0):
+      - 验证通过 + 无回归 → completion +5%, confidence +5%, evidence_strength 按实际, trust_score +2
+      - 验证通过 + 有回归 → completion +5%, confidence -10%, evidence_strength 不变, trust_score -5
+      - Ralph Loop 修复 → completion +5%, confidence +2%, trust_score +1
+      - Divergent 成功 → completion +10%, confidence +5%, trust_score +2
+      - 触发回滚 → completion +0%, confidence -20%, trust_score -10
+      - 子代理 empty/error → confidence -20%, trust_score -5
+      - 用户介入确认 → confidence +10%, trust_score +5, evidence_strength 更新
+
+      注意:
+      - evidence_strength 必须通过实际验证提升
+      - trust_score 反映 Agent 长期可靠性，短期波动不应过大
+      - value_score 通常在 Phase 0 确定，执行中不变除非需求发生重大变更
