@@ -32,16 +32,50 @@ done
 # 2. 检查元数据字段（v3.0 新增）
 echo ""
 echo "2️⃣ Checking metadata (v3.0)..."
-adaptive_mode=$(grep -E '^\*\*自适应模式\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-task_tier=$(grep -E '^\*\*任务分级\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-profile=$(grep -E '^\*\*配置档位\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-cost_budget=$(grep -E '^\*\*成本预算\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-replan_count=$(grep -E '^\*\*重规划计数\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\/.*\].*/\1/' | head -1)
-rollback_count=$(grep -E '^\*\*回滚计数\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\/.*\].*/\1/' | head -1)
-plan_frozen=$(grep -E '^\*\*计划冻结\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-trust_score=$(grep -E '^\*\*信任评分\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-value_score=$(grep -E '^\*\*价值评分\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
-terminal_enabled=$(grep -E '^\*\*终端故障检测\*\*' "$LEDGER" | sed 's/.*\[\(.*\)\].*/\1/' | head -1)
+# Helper: extract value from "- **key**: value" or "**key**: value" formats
+extract_meta() {
+  local key="$1"
+  local line=$(grep -E "^-[[:space:]]*\\*\\*${key}\\*\\*" "$LEDGER" | head -1)
+  if [[ -z "$line" ]]; then
+    line=$(grep -E "^\\*\\*${key}\\*\\*" "$LEDGER" | head -1)
+  fi
+  echo "$line"
+}
+extract_value() {
+  local line="$1"
+  # Extract value after ": "
+  local val=$(echo "$line" | sed 's/.*\*\*:[[:space:]]*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+  # If value is in brackets, extract inner content
+  if echo "$val" | grep -q '^\[.*\]$'; then
+    echo "$val" | sed 's/^\[\(.*\)\]$/\1/'
+  else
+    echo "$val"
+  fi
+}
+
+meta_line=$(extract_meta "自适应模式")
+adaptive_mode=$(extract_value "$meta_line")
+meta_line=$(extract_meta "任务分级")
+task_tier=$(extract_value "$meta_line")
+meta_line=$(extract_meta "配置档位")
+profile=$(extract_value "$meta_line")
+meta_line=$(extract_meta "成本预算")
+cost_budget=$(extract_value "$meta_line")
+meta_line=$(extract_meta "重规划计数")
+replan_count_raw=$(extract_value "$meta_line")
+# replan_count: handle "0/3" format
+replan_count=$(echo "$replan_count_raw" | sed 's|/.*||')
+meta_line=$(extract_meta "回滚计数")
+rollback_count_raw=$(extract_value "$meta_line")
+rollback_count=$(echo "$rollback_count_raw" | sed 's|/.*||')
+meta_line=$(extract_meta "计划冻结")
+plan_frozen=$(extract_value "$meta_line")
+meta_line=$(extract_meta "信任评分")
+trust_score=$(extract_value "$meta_line")
+meta_line=$(extract_meta "价值评分")
+value_score=$(extract_value "$meta_line")
+meta_line=$(extract_meta "终端故障检测")
+terminal_enabled=$(extract_value "$meta_line")
 
 # Adaptive mode
 if [[ -n "$adaptive_mode" ]] && [[ "$adaptive_mode" =~ ^(tiny|normal|strategic)$ ]]; then
@@ -247,7 +281,7 @@ while IFS= read -r line; do
     echo "  ❌ Task $id is done but evidence is empty"
     done_missing=$((done_missing + 1))
   fi
-done < <(grep -E '^\| *[0-9]+' "$LEDGER" || true)
+done < <(grep -E '^\|[[:space:]]*[0-9]+[[:space:]]*\|' "$LEDGER" || true)
 
 if [[ $done_missing -eq 0 ]]; then
   echo "  ✅ All done tasks have evidence"
@@ -260,10 +294,12 @@ echo ""
 echo "8️⃣ Checking for circular dependencies in milestones..."
 # 提取战略上下文中的 milestone 依赖关系（简单匹配 "id: X, depends_on: [Y,Z]"）
 # 这里简化处理，仅检查 WBS 中的任务依赖是否引用存在的任务
-task_ids=$(grep -E '^\| *[0-9]+' "$LEDGER" | awk -F'|' '{print $2}' | tr -d ' ' | sort -n)
+# Only match WBS rows where first field is a pure integer (not dates/percentages)
+task_ids=$(grep -E '^\|[[:space:]]*[0-9]+[[:space:]]*\|' "$LEDGER" | awk -F'|' '{print $2}' | tr -d ' ' | sort -n)
 circular=0
 while IFS= read -r line; do
-  deps=$(echo "$line" | awk -F'|' '{print $3}' | tr -d ' ')
+  # Fix: dependency is column 4 in v3.0 (13-col WBS)
+deps=$(echo "$line" | awk -F'|' '{print $4}' | tr -d ' ')
   if [[ -n "$deps" && "$deps" != "-" ]]; then
     for dep in $(echo "$deps" | tr ',' ' '); do
       dep=$(echo "$dep" | tr -d ' ')
@@ -273,7 +309,7 @@ while IFS= read -r line; do
       fi
     done
   fi
-done < <(grep -E '^\| *[0-9]+' "$LEDGER" || true)
+done < <(grep -E '^\|[[:space:]]*[0-9]+[[:space:]]*\|' "$LEDGER" || true)
 
 if [[ $circular -eq 0 ]]; then
   echo "  ✅ No broken dependency references"
